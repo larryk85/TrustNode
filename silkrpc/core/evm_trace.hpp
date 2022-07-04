@@ -241,6 +241,7 @@ private:
 
 struct TraceCallTraces {
     std::string output{"0x"};
+    std::optional<evmc::bytes32> transaction_hash;
     std::optional<StateDiff> state_diff;
     std::vector<Trace> trace;
     std::optional<VmTrace> vm_trace;
@@ -252,6 +253,7 @@ struct TraceCallResult {
 };
 
 void to_json(nlohmann::json& json, const TraceCallTraces& result);
+void to_json(nlohmann::json& json, const TraceCallResult& result);
 
 template<typename WorldState = silkworm::IntraBlockState, typename VM = silkworm::EVM>
 class TraceCallExecutor {
@@ -263,6 +265,7 @@ public:
     TraceCallExecutor(const TraceCallExecutor&) = delete;
     TraceCallExecutor& operator=(const TraceCallExecutor&) = delete;
 
+    asio::awaitable<std::vector<TraceCallResult>> execute(const silkworm::Block& block);
     asio::awaitable<TraceCallResult> execute(const silkworm::Block& block, const silkrpc::Call& call);
     asio::awaitable<TraceCallResult> execute(const silkworm::Block& block, const silkrpc::Transaction& transaction) {
         return execute(block.header.number-1, block, transaction, transaction.transaction_index);
