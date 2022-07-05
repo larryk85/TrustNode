@@ -213,13 +213,45 @@ struct StateDiffEntry {
 
 using StateDiff = std::map<std::string, StateDiffEntry>;
 
+struct StateAddress {
+    intx::uint256 balance{0};
+    uint64_t nonce{0};
+    silkworm::Bytes code;
+};
+
+class StateAddresses {
+public:
+    explicit StateAddresses(silkworm::IntraBlockState& initial_ibs) :
+        initial_ibs_(initial_ibs) {}
+
+    StateAddresses(const StateAddresses&) = delete;
+    StateAddresses& operator=(const StateAddresses&) = delete;
+
+    bool exists(const evmc::address& address) const noexcept {return initial_ibs_.exists(address);}
+
+    intx::uint256 get_balance(const evmc::address& address) const noexcept;
+    void set_balance(const evmc::address& address, const intx::uint256& value) noexcept {balances_[address] = value;}
+
+    uint64_t get_nonce(const evmc::address& address) const noexcept;
+    void set_nonce(const evmc::address& address, uint64_t nonce) noexcept {nonces_[address] = nonce;}
+
+    silkworm::ByteView get_code(const evmc::address& address) const noexcept;
+    void set_code(const evmc::address& address, silkworm::ByteView code) noexcept {codes_[address] = silkworm::Bytes{code};}
+
+private:
+    std::map<evmc::address, intx::uint256> balances_;
+    std::map<evmc::address, uint64_t> nonces_;
+    std::map<evmc::address, silkworm::Bytes> codes_;
+    silkworm::IntraBlockState& initial_ibs_;
+};
+
 void to_json(nlohmann::json& json, const DiffValue& dn);
 void to_json(nlohmann::json& json, const StateDiffEntry& state_diff);
 
 class StateDiffTracer : public silkworm::EvmTracer {
 public:
-    explicit StateDiffTracer(StateDiff &state_diff, silkworm::IntraBlockState& initial_ibs) :
-        state_diff_(state_diff), initial_ibs_(initial_ibs) {}
+    explicit StateDiffTracer(StateDiff &state_diff, StateAddresses& state_addresses) :
+        state_diff_(state_diff), state_addresses_(state_addresses) {}
 
     StateDiffTracer(const StateDiffTracer&) = delete;
     StateDiffTracer& operator=(const StateDiffTracer&) = delete;
@@ -233,7 +265,8 @@ public:
 
 private:
     StateDiff& state_diff_;
-    silkworm::IntraBlockState& initial_ibs_;
+    StateAddresses& state_addresses_;
+    // silkworm::IntraBlockState& initial_ibs_;
     std::map<evmc::address, std::set<std::string>> diff_storage_;
     std::map<evmc::address, silkworm::ByteView> code_;
     const char* const* opcode_names_ = nullptr;
@@ -254,6 +287,25 @@ struct TraceCallResult {
 
 void to_json(nlohmann::json& json, const TraceCallTraces& result);
 void to_json(nlohmann::json& json, const TraceCallResult& result);
+
+class IntraBlockStateTracer : public silkworm::EvmTracer {
+public:
+    explicit IntraBlockStateTracer(StateAddresses& state_addresses) :
+        state_addresses_{state_addresses} {}
+
+    IntraBlockStateTracer(const IntraBlockStateTracer&) = delete;
+    IntraBlockStateTracer& operator=(const IntraBlockStateTracer&) = delete;
+
+    void on_execution_start(evmc_revision rev, const evmc_message& msg, evmone::bytes_view code) noexcept override {};
+    void on_instruction_start(uint32_t pc , const intx::uint256 *stack_top, const int stack_height,
+            const evmone::ExecutionState& execution_state, const silkworm::IntraBlockState& intra_block_state) noexcept override {};
+    void on_execution_end(const evmc_result& result, const silkworm::IntraBlockState& intra_block_state) noexcept override {};
+    void on_precompiled_run(const evmc::result& result, int64_t gas, const silkworm::IntraBlockState& intra_block_state) noexcept override {};
+    void on_reward_granted(const silkworm::CallResult& result, const silkworm::IntraBlockState& intra_block_state) noexcept override;
+
+private:
+    StateAddresses& state_addresses_;
+};
 
 template<typename WorldState = silkworm::IntraBlockState, typename VM = silkworm::EVM>
 class TraceCallExecutor {
