@@ -534,6 +534,7 @@ void TraceTracer::on_execution_start(evmc_revision rev, const evmc_message& msg,
     current_depth_ = msg.depth;
 
     auto create = (!initial_ibs_.exists(recipient) && created_address_.find(recipient) == created_address_.end() && recipient != code_address);
+    // auto create = msg.kind == evmc_call_kind::EVMC_CREATE || msg.kind == evmc_call_kind::EVMC_CREATE2;
 
     start_gas_.push(msg.gas);
 
@@ -591,9 +592,10 @@ void TraceTracer::on_execution_start(evmc_revision rev, const evmc_message& msg,
     }
     index_stack_.push(index);
 
-    SILKRPC_DEBUG << "TraceTracer::on_execution_start: gas: " << std::dec << msg.gas
+    SILKRPC_LOG << "TraceTracer::on_execution_start: gas: " << std::dec << msg.gas
         << " create: " << create
-        << ", depth: " << msg.depth
+        << ", msg.depth: " << msg.depth
+        << ", msg.kind: " << msg.kind
         << ", sender: " << sender
         << ", recipient: " << recipient << " (created: " << create << ")"
         << ", code_address: " << code_address
@@ -630,8 +632,13 @@ void TraceTracer::on_execution_end(const evmc_result& result, const silkworm::In
 
     Trace& trace = traces_[index];
 
-    if (current_depth_) {
-        trace.trace_result->output = silkworm::ByteView{result.output_data, result.output_size};
+    if (current_depth_ > 0) {
+        if (trace.trace_result->code) {
+            trace.trace_result->code = silkworm::ByteView{result.output_data, result.output_size};
+        } else if (trace.trace_result->output) {
+            trace.trace_result->output = silkworm::ByteView{result.output_data, result.output_size};
+        }
+        // trace.trace_result->output = silkworm::ByteView{result.output_data, result.output_size};
     }
 
     current_depth_--;
@@ -640,7 +647,6 @@ void TraceTracer::on_execution_end(const evmc_result& result, const silkworm::In
         case evmc_status_code::EVMC_SUCCESS:
             trace.trace_result->gas_used = start_gas - result.gas_left;
             break;
-        break;
         case evmc_status_code::EVMC_REVERT:
             trace.error = "Reverted";
             trace.trace_result.reset();
@@ -808,10 +814,10 @@ void StateDiffTracer::on_execution_end(const evmc_result& result, const silkworm
 }
 
 void StateDiffTracer::on_reward_granted(const silkworm::CallResult& result, const silkworm::IntraBlockState& intra_block_state) noexcept {
-    SILKRPC_DEBUG << "StateDiffTracer::on_reward_granted:"
+    SILKRPC_LOG << "StateDiffTracer::on_reward_granted:"
         << " result.status_code: " << result.status
         << ", result.gas_left: " << result.gas_left
-        << ", #touched: " << intra_block_state.touched().size()
+        << ", #touched: " << std::dec << intra_block_state.touched().size()
         << "\n";
 
     for (const auto& address : intra_block_state.touched()) {
@@ -880,7 +886,7 @@ void StateDiffTracer::on_reward_granted(const silkworm::CallResult& result, cons
                 };
                 for (auto& key : diff_storage) {
                     auto key_b32 = silkworm::bytes32_from_hex(key);
-                    entry.storage[key] = DiffValue{
+                    entry.storage[key] = DiffValue {
                         "0x" + silkworm::to_hex(intra_block_state.get_original_storage(address, key_b32))
                     };
                 }
@@ -903,7 +909,7 @@ void StateDiffTracer::on_reward_granted(const silkworm::CallResult& result, cons
             };
             for (auto& key : diff_storage) {
                 auto key_b32 = silkworm::bytes32_from_hex(key);
-                entry.storage[key] = DiffValue{
+                entry.storage[key] = DiffValue {
                     {},
                     "0x" + silkworm::to_hex(intra_block_state.get_current_storage(address, key_b32))
                 };
@@ -913,21 +919,37 @@ void StateDiffTracer::on_reward_granted(const silkworm::CallResult& result, cons
 };
 
 void IntraBlockStateTracer::on_reward_granted(const silkworm::CallResult& result, const silkworm::IntraBlockState& intra_block_state) noexcept {
-    SILKRPC_DEBUG << "IntraBlockStateTracer::on_reward_granted:"
+    SILKRPC_LOG << "**********************************************************************\n"
+        << "IntraBlockStateTracer::on_reward_granted:"
         << " result.status_code: " << result.status
         << ", result.gas_left: " << result.gas_left
         << ", #touched: " << intra_block_state.touched().size()
         << "\n";
 
     for (auto& address : intra_block_state.touched()) {
-        auto balance = intra_block_state.get_balance(address);
-        auto nonce = intra_block_state.get_nonce(address);
-        auto code = intra_block_state.get_code(address);
+        auto balance_exists = state_addresses_.balance_exists(address);
+        auto balance_old = state_addresses_.get_balance(address);
+        auto nonce_old = state_addresses_.get_nonce(address);
+        auto code_old = state_addresses_.get_code(address);
 
+        auto balance = intra_block_state.get_balance(address);
         state_addresses_.set_balance(address, balance);
+
+        auto nonce = intra_block_state.get_nonce(address);
         state_addresses_.set_nonce(address, nonce);
+
+        auto code = intra_block_state.get_code(address);
         state_addresses_.set_code(address, code);
+
+        SILKRPC_LOG << "IntraBlockStateTracer::on_reward_granted:"
+            << " address: 0x" << address
+            << "\n balance exists: " << balance_exists
+            << "\n balance from: 0x" << intx::to_string(balance_old, 16) << " to: 0x" << intx::to_string(balance, 16)
+            << "\n nonce from: " << nonce_old << " to: " << nonce
+            << "\n code from: 0x" << silkworm::to_hex(code_old) << " to: 0x" << silkworm::to_hex(code)
+            << "\n";
     }
+    SILKRPC_LOG << "**********************************************************************\n";
 }
 
 template<typename WorldState, typename VM>
@@ -935,13 +957,16 @@ asio::awaitable<std::vector<TraceCallResult>> TraceCallExecutor<WorldState, VM>:
     auto block_number = block.header.number;
     const auto& transactions = block.transactions;
 
-    SILKRPC_DEBUG << "execute: block_number: " << block_number << " #txns: " << transactions.size() << " config: " << config_ << "\n";
+    SILKRPC_INFO << "execute: block_number: " << block_number << " #txns: " << transactions.size() << " config: " << config_ << "\n";
 
     const auto chain_id = co_await core::rawdb::read_chain_id(database_reader_);
     const auto chain_config_ptr = silkworm::lookup_chain_config(chain_id);
 
-    state::RemoteState remote_state{io_context_, database_reader_, block_number};
+    state::RemoteState remote_state{io_context_, database_reader_, block_number-1};
     silkworm::IntraBlockState initial_ibs{remote_state};
+
+    StateAddresses state_addresses(initial_ibs);
+    std::shared_ptr<silkworm::EvmTracer> ibsTracer = std::make_shared<trace::IntraBlockStateTracer>(state_addresses);
 
     EVMExecutor<WorldState, VM> executor{io_context_, database_reader_, *chain_config_ptr, workers_, block_number-1};
 
@@ -957,8 +982,6 @@ asio::awaitable<std::vector<TraceCallResult>> TraceCallExecutor<WorldState, VM>:
         TraceCallTraces& traces = result.traces;
         auto hash{hash_of_transaction(transaction)};
         traces.transaction_hash = silkworm::to_bytes32({hash.bytes, silkworm::kHashLength});
-
-        StateAddresses state_addresses(initial_ibs);
 
         Tracers tracers;
         if (config_.vm_trace) {
@@ -976,6 +999,8 @@ asio::awaitable<std::vector<TraceCallResult>> TraceCallExecutor<WorldState, VM>:
             std::shared_ptr<silkworm::EvmTracer> tracer = std::make_shared<trace::StateDiffTracer>(traces.state_diff.value(), state_addresses);
             tracers.push_back(tracer);
         }
+
+        tracers.push_back(ibsTracer);
 
         auto execution_result = co_await executor.call(block, transaction, /*refund=*/true, /*gas_bailout=*/true, tracers);
         if (execution_result.pre_check_error) {

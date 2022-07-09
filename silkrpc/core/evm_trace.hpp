@@ -231,12 +231,15 @@ public:
 
     intx::uint256 get_balance(const evmc::address& address) const noexcept;
     void set_balance(const evmc::address& address, const intx::uint256& value) noexcept {balances_[address] = value;}
+    bool balance_exists(const evmc::address& address) const noexcept {return balances_.find(address) != balances_.end();}
 
     uint64_t get_nonce(const evmc::address& address) const noexcept;
     void set_nonce(const evmc::address& address, uint64_t nonce) noexcept {nonces_[address] = nonce;}
+    bool nonce_exists(const evmc::address& address) const noexcept {return nonces_.find(address) != nonces_.end();}
 
     silkworm::ByteView get_code(const evmc::address& address) const noexcept;
     void set_code(const evmc::address& address, silkworm::ByteView code) noexcept {codes_[address] = silkworm::Bytes{code};}
+    bool code_exists(const evmc::address& address) const noexcept {return codes_.find(address) != codes_.end();}
 
 private:
     std::map<evmc::address, intx::uint256> balances_;
